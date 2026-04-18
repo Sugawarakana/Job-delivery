@@ -46,4 +46,4 @@ python jd_bg_cmp.py
 
 ## Notes
 - The Chrome debugging session must remain open while using the tool
-- Never commit your API key — use environment variables or a `.env` file
+- Currently CHN version only 
