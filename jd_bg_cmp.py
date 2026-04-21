@@ -40,10 +40,12 @@ def analyze_match(resume_text: str, job: dict) -> dict:
     prompt = f"""你是一个求职筛选助手，帮助一个需要 H-1B sponsorship 的候选人决定是否投递职位。
 
 ## 硬性淘汰（满足任意一条，score 直接返回 0）
-1. 需要 security clearance
-2. 需要绿卡或美国公民身份
+1. 职位描述中出现 security clearance 相关字样（无论是"持有"还是"有资格获得"）
+2. 要求绿卡、美国公民身份，或"eligible for clearance"（隐含公民要求）
 3. 明确不提供 visa / H-1B sponsorship
 4. 要求经验年限 ≥ 候选人实际经验的 2.5 倍
+
+⚠️ 注意：H-1B 持有人通常无法获得 security clearance，因此任何涉及 clearance 的要求均视为淘汰。
 
 ## 候选人简历
 {resume_text}
@@ -64,7 +66,7 @@ def analyze_match(resume_text: str, job: dict) -> dict:
 }}"""
 
     message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=1500,
         messages=[{"role": "user", "content": prompt}]
     )
@@ -112,7 +114,7 @@ async def search_jobs(page, keywords: str, location: str = "", limit: int = 30, 
             f"https://www.linkedin.com/jobs/search/"
             f"?keywords={keywords}"
             f"&location={location}"
-            f"&f_TPR=r604800"
+            f"&f_TPR=r86400"
             f"&f_E=2"
             f"&f_JT=F"
             f"&start={start}"
@@ -196,29 +198,33 @@ async def get_job_description(page, job_url: str) -> str:
     await page.goto(job_url, wait_until="domcontentloaded", timeout=60000)
     await page.wait_for_timeout(3000)
 
-    # 用稳定的 data 属性定位 JD 容器，在容器内点击 more
+    # 找 "About the job" 标题，点击其兄弟节点内的 "… more" 按钮
     await page.evaluate("""() => {
-        const container = document.querySelector(
-            'div[data-sdui-component*="aboutTheJob"], div[data-sdui-component*="AboutTheJob"]'
-        );
-        if (!container) return;
-
-        const spans = container.querySelectorAll('span');
-        for (const span of spans) {
-            if (span.innerText.trim().toLowerCase() === 'more') {
-                span.parentElement.click();
-                break;
+        for (const h of document.querySelectorAll('h1,h2,h3')) {
+            if (!(h.innerText || '').toLowerCase().includes('about the job')) continue;
+            const sibling = h.parentElement && h.parentElement.nextElementSibling;
+            if (!sibling) continue;
+            for (const btn of sibling.querySelectorAll('button, a')) {
+                const t = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+                if (t.includes('more') && t.length < 15) {
+                    btn.click();
+                    return;
+                }
             }
         }
     }""")
     await page.wait_for_timeout(800)
 
     desc = await page.evaluate("""() => {
-        // 抓右侧整个职位详情面板
-        const panel = document.querySelector(
-            '.jobs-search__job-details, .job-view-layout, .scaffold-layout__detail'
-        );
-        return panel ? panel.innerText.trim() : '';
+        // 找 "About the job" 标题的下一个兄弟节点（存放实际 JD 内容）
+        for (const h of document.querySelectorAll('h1,h2,h3')) {
+            if (!(h.innerText || '').toLowerCase().includes('about the job')) continue;
+            const sibling = h.parentElement && h.parentElement.nextElementSibling;
+            if (sibling && sibling.innerText.trim().length > 50) {
+                return sibling.innerText.trim();
+            }
+        }
+        return '';
     }""")
 
     return desc[:3000] if desc else ''
@@ -316,4 +322,22 @@ async def main():
     with open("job_matches.json", "w", encoding="utf-8") as f:
         json.dump(all_results, f, ensure_ascii=False, indent=2)
     print(f"\n✅ 结果已保存，共 {len(all_results)} 个职位（含历史）")
+
+async def debug_job(url: str):
+    resume_text = extract_resume_text(RESUME_FILE)
+    async with async_playwright() as p:
+        browser, context = await create_browser(p)
+        page = await context.new_page()
+        desc = await get_job_description(page, url)
+        print(f"\n描述长度: {len(desc)} 字符")
+        print("─" * 60)
+        print(desc[:1000])
+        print("─" * 60)
+        if desc:
+            match = analyze_match(resume_text, {"title": "Debug Job", "company": "N/A", "location": "N/A", "description": desc})
+            print(f"\n⭐ {match.get('score')}/100 - {match.get('summary')}")
+        await browser.close()
+
+# ── 调试单个职位时用下面这行，正常运行时换回 main() ──
+# asyncio.run(debug_job("https://www.linkedin.com/jobs/view/4398041754/?alternateChannel=search&eBP=CwEAAAGdsTjqMmXX5h5dQghKa3vnIrRY1CPUcOZ6j-th8QjdHQkiiBKTbpf62RLls6oU4c8koKPZzQQUcNUkUjCUhblpsxHo0YMlCC5Lj4yIC1ibPz93idU-6EnblQFeouN7kxs8YgAJw1xV9rkopHG4alXYW_wmKeOfamvpCfrzXFOtRoWFutoxP_CBN5wt-3nzcwzPbfgQn7ePSMo2RbQeCxWK3uBYWh5GTTNN6phAGKFsIp-pqq6CJqDk4GIVYWHhTkmEjLjHZSEvvEdTSozDvvCi3YjH90zhzoLlIN74H3XzDcbFrTJ679nlL3C7xfDjCzeFF3VevCNXQog2xwDm6Hv_YSRdITRiqVX7gUmSiu4UUbj_TZoRnKvIZ4lsdImrstc7TpppToPWlGBdZwqV8NKQuaNJQ4QwLGvNvENsKVPxWk7j7Hp00eTRYDqdfwz7HponS2x40om3LT6zaZNboXblhFZ4ANDZkrAX91kYwJSV5Q&refId=busB%2F%2FsoUCjA9OeR2Q%2Bv4Q%3D%3D&trackingId=KkBMI8AlKoQp9Ce08cIC1g%3D%3D"))
 asyncio.run(main())
