@@ -64,7 +64,7 @@ def analyze_match(resume_text: str, job: dict) -> dict:
 }}"""
 
     message = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=1500,
         messages=[{"role": "user", "content": prompt}]
     )
@@ -239,7 +239,7 @@ async def main():
     # ↓↓↓ 修改搜索参数 ↓↓↓
     KEYWORDS = "Embedded Software Engineer"
     LOCATION = "United States"
-    LIMIT = 1
+    LIMIT = 100
     START_PAGE = 1
     # ↑↑↑ 修改搜索参数 ↑↑↑
 
